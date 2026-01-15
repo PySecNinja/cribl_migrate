@@ -5,13 +5,24 @@ Cribl Cloud Configuration Copy Tool
 Copy sources, pipelines, and routes between worker groups in Cribl Cloud.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import sys
+from typing import Any
+
 import requests
 
 
-def load_config(config_path):
+# Type aliases for clarity
+Config = dict[str, Any]
+Resource = dict[str, Any]
+ResourceList = list[Resource]
+CopyResults = dict[str, list[str]]
+
+
+def load_config(config_path: str) -> Config:
     """Load configuration from JSON file."""
     try:
         with open(config_path, 'r') as f:
@@ -25,7 +36,15 @@ def load_config(config_path):
         sys.exit(1)
 
 
-def get_auth_token(client_id, client_secret):
+def make_auth_headers(token: str) -> dict[str, str]:
+    """Create authorization headers for API requests."""
+    return {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+
+
+def get_auth_token(client_id: str, client_secret: str) -> str:
     """Authenticate with Cribl Cloud and get Bearer token."""
     url = "https://login.cribl.cloud/oauth/token"
     payload = {
@@ -34,47 +53,40 @@ def get_auth_token(client_id, client_secret):
         "client_secret": client_secret,
         "audience": "https://api.cribl.cloud"
     }
-    headers = {"Content-Type": "application/json"}
 
-    response = requests.post(url, json=payload, headers=headers)
+    response = requests.post(url, json=payload, headers={"Content-Type": "application/json"})
 
     if response.status_code != 200:
         print(f"Error: Authentication failed ({response.status_code})")
         print(f"Response: {response.text}")
         sys.exit(1)
 
-    data = response.json()
-    return data.get("access_token")
+    return response.json().get("access_token")
 
 
-def build_base_url(workspace, org_id, group=None):
+def build_base_url(workspace: str, org_id: str, group: str | None = None) -> str:
     """Build the Cribl Cloud API base URL."""
     base = f"https://{workspace}-{org_id}.cribl.cloud/api/v1"
     if group:
-        base = f"{base}/m/{group}"
+        return f"{base}/m/{group}"
     return base
 
 
-def get_worker_groups(workspace, org_id, token):
+def get_worker_groups(workspace: str, org_id: str, token: str) -> ResourceList:
     """Fetch available worker groups from Cribl Cloud API."""
     base_url = f"https://{workspace}-{org_id}.cribl.cloud/api/v1"
     url = f"{base_url}/master/groups"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
 
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, headers=make_auth_headers(token))
 
     if response.status_code != 200:
         print(f"Warning: Could not fetch worker groups ({response.status_code})")
         return []
 
-    data = response.json()
-    return data.get("items", [])
+    return response.json().get("items", [])
 
 
-def select_worker_group(groups, prompt="Select a worker group"):
+def select_worker_group(groups: ResourceList, prompt: str = "Select a worker group") -> str | None:
     """Prompt user to select a worker group interactively."""
     if not groups:
         print("No worker groups found.")
@@ -100,7 +112,7 @@ def select_worker_group(groups, prompt="Select a worker group"):
             print("Please enter a valid number")
 
 
-def select_resource_type():
+def select_resource_type() -> list[str]:
     """Prompt user to select what type of resource to copy."""
     print("\nWhat would you like to copy?")
     print("  1. Sources")
@@ -109,80 +121,91 @@ def select_resource_type():
     print("  4. Destinations")
     print("  5. All (Sources, Pipelines, Routes, Destinations)")
 
+    all_resources = ['sources', 'pipelines', 'destinations', 'routes']
+    resource_map = {1: 'sources', 2: 'pipelines', 3: 'routes', 4: 'destinations'}
+
     while True:
         choice = input("\nSelect resource type (enter number, or comma-separated for multiple): ").strip()
 
-        # Handle "all" option
         if choice == '5':
-            return ['sources', 'pipelines', 'destinations', 'routes']
+            return all_resources
 
-        # Handle single or multiple selections
         try:
             selections = [int(x.strip()) for x in choice.split(',')]
-            resource_map = {1: 'sources', 2: 'pipelines', 3: 'routes', 4: 'destinations'}
             resources = []
             valid = True
+
             for sel in selections:
+                if sel == 5:
+                    return all_resources
                 if sel in resource_map:
                     if resource_map[sel] not in resources:
                         resources.append(resource_map[sel])
-                elif sel == 5:
-                    return ['sources', 'pipelines', 'destinations', 'routes']
                 else:
                     print(f"Invalid selection: {sel}")
                     valid = False
                     break
+
             if valid and resources:
                 return resources
         except ValueError:
             print("Please enter valid numbers (1-5), comma-separated for multiple")
 
 
-# --- Sources ---
+# --- Generic Resource Operations ---
 
-def get_sources(base_url, token):
-    """Fetch all sources from Cribl Cloud API."""
-    url = f"{base_url}/system/inputs"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
+def format_source_item(source: Resource) -> str:
+    """Format a source item for display."""
+    source_id = source.get("id", "unknown")
+    source_type = source.get("type", "unknown")
+    collector_type = source.get("collector", {}).get("type", "")
+    if collector_type:
+        return f"{source_id} ({source_type}/{collector_type})"
+    return f"{source_id} ({source_type})"
 
-    response = requests.get(url, headers=headers)
 
-    if response.status_code != 200:
-        print(f"Error: Failed to fetch sources ({response.status_code})")
-        print(f"Response: {response.text}")
+def format_pipeline_item(pipeline: Resource) -> str:
+    """Format a pipeline item for display."""
+    pipeline_id = pipeline.get("id", "unknown")
+    description = pipeline.get("description", "")
+    func_count = len(pipeline.get("conf", {}).get("functions", []))
+    if description:
+        return f"{pipeline_id} - {description} ({func_count} functions)"
+    return f"{pipeline_id} ({func_count} functions)"
+
+
+def format_output_item(output: Resource) -> str:
+    """Format an output/destination item for display."""
+    output_id = output.get("id", "unknown")
+    output_type = output.get("type", "unknown")
+    description = output.get("description", "")
+    if description:
+        return f"{output_id} ({output_type}) - {description}"
+    return f"{output_id} ({output_type})"
+
+
+def select_items(
+    items: ResourceList,
+    resource_name: str,
+    format_func: callable
+) -> ResourceList:
+    """Generic function to prompt user to select items from a list."""
+    if not items:
+        print(f"No {resource_name} found.")
         return []
 
-    data = response.json()
-    return data.get("items", [])
+    print(f"\nAvailable {resource_name.title()}:")
+    for i, item in enumerate(items, 1):
+        print(f"  {i}. {format_func(item)}")
 
-
-def select_sources(sources):
-    """Prompt user to select sources to copy."""
-    if not sources:
-        print("No sources found.")
-        return []
-
-    print("\nAvailable Sources:")
-    for i, source in enumerate(sources, 1):
-        source_id = source.get("id", "unknown")
-        source_type = source.get("type", "unknown")
-        collector_type = source.get("collector", {}).get("type", "")
-        if collector_type:
-            print(f"  {i}. {source_id} ({source_type}/{collector_type})")
-        else:
-            print(f"  {i}. {source_id} ({source_type})")
-
-    print(f"\n  a. Select all sources")
-    print(f"  n. Select none (skip sources)")
+    print(f"\n  a. Select all {resource_name}")
+    print(f"  n. Select none (skip {resource_name})")
 
     while True:
-        choice = input("\nSelect source(s) to copy (comma-separated numbers, 'a' for all, 'n' for none): ").strip().lower()
+        choice = input(f"\nSelect {resource_name} to copy (comma-separated numbers, 'a' for all, 'n' for none): ").strip().lower()
 
         if choice == 'a':
-            return sources
+            return items
         if choice == 'n':
             return []
 
@@ -190,342 +213,204 @@ def select_sources(sources):
             indices = [int(x.strip()) - 1 for x in choice.split(',')]
             selected = []
             valid = True
+
             for index in indices:
-                if 0 <= index < len(sources):
-                    selected.append(sources[index])
+                if 0 <= index < len(items):
+                    selected.append(items[index])
                 else:
                     print(f"Invalid selection: {index + 1}")
                     valid = False
                     break
+
             if valid:
                 return selected
         except ValueError:
             print("Please enter valid numbers separated by commas, 'a' for all, or 'n' for none")
 
 
-def create_source(base_url, token, source_config):
-    """Create a source in the target worker group."""
-    url = f"{base_url}/system/inputs"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
+def fetch_resources(base_url: str, token: str, endpoint: str, resource_name: str) -> ResourceList:
+    """Fetch resources from a Cribl Cloud API endpoint."""
+    url = f"{base_url}/{endpoint}"
+    response = requests.get(url, headers=make_auth_headers(token))
 
-    config_to_send = source_config.copy()
-    config_to_send.pop("savedState", None)
+    if response.status_code != 200:
+        print(f"Error: Failed to fetch {resource_name} ({response.status_code})")
+        print(f"Response: {response.text}")
+        return []
 
-    response = requests.post(url, json=config_to_send, headers=headers)
-    return response
+    return response.json().get("items", [])
 
 
-def update_source(base_url, token, source_id, source_config):
-    """Update an existing source in the target worker group."""
-    url = f"{base_url}/system/inputs/{source_id}"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
+def create_resource(
+    base_url: str,
+    token: str,
+    endpoint: str,
+    config: Resource,
+    strip_fields: list[str] | None = None
+) -> requests.Response:
+    """Create a resource via POST request."""
+    url = f"{base_url}/{endpoint}"
+    config_to_send = config.copy()
 
-    config_to_send = source_config.copy()
-    config_to_send.pop("savedState", None)
+    for field in (strip_fields or []):
+        config_to_send.pop(field, None)
 
-    response = requests.patch(url, json=config_to_send, headers=headers)
-    return response
+    return requests.post(url, json=config_to_send, headers=make_auth_headers(token))
 
 
-def copy_sources(base_url, token, sources, existing_ids):
-    """Copy sources to the target worker group."""
-    results = {"created": [], "updated": [], "failed": []}
+def update_resource(
+    base_url: str,
+    token: str,
+    endpoint: str,
+    resource_id: str,
+    config: Resource,
+    strip_fields: list[str] | None = None
+) -> requests.Response:
+    """Update a resource via PATCH request."""
+    url = f"{base_url}/{endpoint}/{resource_id}"
+    config_to_send = config.copy()
 
-    for source in sources:
-        source_id = source.get("id")
+    for field in (strip_fields or []):
+        config_to_send.pop(field, None)
 
-        if source_id in existing_ids:
-            choice = input(f"  Source '{source_id}' already exists. Overwrite? (y/n): ").strip().lower()
+    return requests.patch(url, json=config_to_send, headers=make_auth_headers(token))
+
+
+def copy_resources(
+    base_url: str,
+    token: str,
+    resources: ResourceList,
+    existing_ids: set[str],
+    endpoint: str,
+    resource_name: str,
+    strip_fields: list[str] | None = None
+) -> CopyResults:
+    """Copy resources to the target worker group."""
+    results: CopyResults = {"created": [], "updated": [], "failed": []}
+
+    for resource in resources:
+        resource_id = resource.get("id")
+
+        if resource_id in existing_ids:
+            choice = input(f"  {resource_name.title()} '{resource_id}' already exists. Overwrite? (y/n): ").strip().lower()
             if choice == 'y':
-                response = update_source(base_url, token, source_id, source)
+                response = update_resource(base_url, token, endpoint, resource_id, resource, strip_fields)
                 if response.status_code == 200:
-                    print(f"    Updated: {source_id}")
-                    results["updated"].append(source_id)
+                    print(f"    Updated: {resource_id}")
+                    results["updated"].append(resource_id)
                 else:
-                    print(f"    Failed to update: {source_id} ({response.status_code})")
-                    results["failed"].append(source_id)
+                    print(f"    Failed to update: {resource_id} ({response.status_code})")
+                    results["failed"].append(resource_id)
             else:
-                print(f"    Skipped: {source_id}")
+                print(f"    Skipped: {resource_id}")
         else:
-            response = create_source(base_url, token, source)
+            response = create_resource(base_url, token, endpoint, resource, strip_fields)
             if response.status_code == 200:
-                print(f"    Created: {source_id}")
-                results["created"].append(source_id)
+                print(f"    Created: {resource_id}")
+                results["created"].append(resource_id)
             else:
-                print(f"    Failed to create: {source_id} ({response.status_code})")
+                print(f"    Failed to create: {resource_id} ({response.status_code})")
                 print(f"    Response: {response.text}")
-                results["failed"].append(source_id)
+                results["failed"].append(resource_id)
 
     return results
+
+
+# --- Sources ---
+
+def get_sources(base_url: str, token: str) -> ResourceList:
+    """Fetch all sources from Cribl Cloud API."""
+    return fetch_resources(base_url, token, "system/inputs", "sources")
+
+
+def select_sources(sources: ResourceList) -> ResourceList:
+    """Prompt user to select sources to copy."""
+    return select_items(sources, "sources", format_source_item)
+
+
+def create_source(base_url: str, token: str, source_config: Resource) -> requests.Response:
+    """Create a source in the target worker group."""
+    return create_resource(base_url, token, "system/inputs", source_config, ["savedState"])
+
+
+def update_source(base_url: str, token: str, source_id: str, source_config: Resource) -> requests.Response:
+    """Update an existing source in the target worker group."""
+    return update_resource(base_url, token, "system/inputs", source_id, source_config, ["savedState"])
+
+
+def copy_sources(base_url: str, token: str, sources: ResourceList, existing_ids: set[str]) -> CopyResults:
+    """Copy sources to the target worker group."""
+    return copy_resources(base_url, token, sources, existing_ids, "system/inputs", "source", ["savedState"])
 
 
 # --- Pipelines ---
 
-def get_pipelines(base_url, token):
+def get_pipelines(base_url: str, token: str) -> ResourceList:
     """Fetch all pipelines from Cribl Cloud API."""
-    url = f"{base_url}/pipelines"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-
-    response = requests.get(url, headers=headers)
-
-    if response.status_code != 200:
-        print(f"Error: Failed to fetch pipelines ({response.status_code})")
-        print(f"Response: {response.text}")
-        return []
-
-    data = response.json()
-    return data.get("items", [])
+    return fetch_resources(base_url, token, "pipelines", "pipelines")
 
 
-def select_pipelines(pipelines):
+def select_pipelines(pipelines: ResourceList) -> ResourceList:
     """Prompt user to select pipelines to copy."""
-    if not pipelines:
-        print("No pipelines found.")
-        return []
-
-    print("\nAvailable Pipelines:")
-    for i, pipeline in enumerate(pipelines, 1):
-        pipeline_id = pipeline.get("id", "unknown")
-        description = pipeline.get("description", "")
-        func_count = len(pipeline.get("conf", {}).get("functions", []))
-        if description:
-            print(f"  {i}. {pipeline_id} - {description} ({func_count} functions)")
-        else:
-            print(f"  {i}. {pipeline_id} ({func_count} functions)")
-
-    print(f"\n  a. Select all pipelines")
-    print(f"  n. Select none (skip pipelines)")
-
-    while True:
-        choice = input("\nSelect pipeline(s) to copy (comma-separated numbers, 'a' for all, 'n' for none): ").strip().lower()
-
-        if choice == 'a':
-            return pipelines
-        if choice == 'n':
-            return []
-
-        try:
-            indices = [int(x.strip()) - 1 for x in choice.split(',')]
-            selected = []
-            valid = True
-            for index in indices:
-                if 0 <= index < len(pipelines):
-                    selected.append(pipelines[index])
-                else:
-                    print(f"Invalid selection: {index + 1}")
-                    valid = False
-                    break
-            if valid:
-                return selected
-        except ValueError:
-            print("Please enter valid numbers separated by commas, 'a' for all, or 'n' for none")
+    return select_items(pipelines, "pipelines", format_pipeline_item)
 
 
-def create_pipeline(base_url, token, pipeline_config):
+def create_pipeline(base_url: str, token: str, pipeline_config: Resource) -> requests.Response:
     """Create a pipeline in the target worker group."""
-    url = f"{base_url}/pipelines"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-
-    response = requests.post(url, json=pipeline_config, headers=headers)
-    return response
+    return create_resource(base_url, token, "pipelines", pipeline_config)
 
 
-def update_pipeline(base_url, token, pipeline_id, pipeline_config):
+def update_pipeline(base_url: str, token: str, pipeline_id: str, pipeline_config: Resource) -> requests.Response:
     """Update an existing pipeline in the target worker group."""
-    url = f"{base_url}/pipelines/{pipeline_id}"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-
-    response = requests.patch(url, json=pipeline_config, headers=headers)
-    return response
+    return update_resource(base_url, token, "pipelines", pipeline_id, pipeline_config)
 
 
-def copy_pipelines(base_url, token, pipelines, existing_ids):
+def copy_pipelines(base_url: str, token: str, pipelines: ResourceList, existing_ids: set[str]) -> CopyResults:
     """Copy pipelines to the target worker group."""
-    results = {"created": [], "updated": [], "failed": []}
-
-    for pipeline in pipelines:
-        pipeline_id = pipeline.get("id")
-
-        if pipeline_id in existing_ids:
-            choice = input(f"  Pipeline '{pipeline_id}' already exists. Overwrite? (y/n): ").strip().lower()
-            if choice == 'y':
-                response = update_pipeline(base_url, token, pipeline_id, pipeline)
-                if response.status_code == 200:
-                    print(f"    Updated: {pipeline_id}")
-                    results["updated"].append(pipeline_id)
-                else:
-                    print(f"    Failed to update: {pipeline_id} ({response.status_code})")
-                    results["failed"].append(pipeline_id)
-            else:
-                print(f"    Skipped: {pipeline_id}")
-        else:
-            response = create_pipeline(base_url, token, pipeline)
-            if response.status_code == 200:
-                print(f"    Created: {pipeline_id}")
-                results["created"].append(pipeline_id)
-            else:
-                print(f"    Failed to create: {pipeline_id} ({response.status_code})")
-                print(f"    Response: {response.text}")
-                results["failed"].append(pipeline_id)
-
-    return results
+    return copy_resources(base_url, token, pipelines, existing_ids, "pipelines", "pipeline")
 
 
 # --- Outputs/Destinations ---
 
-def get_outputs(base_url, token):
+def get_outputs(base_url: str, token: str) -> ResourceList:
     """Fetch all outputs/destinations from Cribl Cloud API."""
-    url = f"{base_url}/system/outputs"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-
-    response = requests.get(url, headers=headers)
-
-    if response.status_code != 200:
-        print(f"Error: Failed to fetch outputs ({response.status_code})")
-        return []
-
-    data = response.json()
-    return data.get("items", [])
+    return fetch_resources(base_url, token, "system/outputs", "outputs")
 
 
-def select_outputs(outputs):
+def select_outputs(outputs: ResourceList) -> ResourceList:
     """Prompt user to select outputs/destinations to copy."""
-    if not outputs:
-        print("No destinations found.")
-        return []
-
-    print("\nAvailable Destinations:")
-    for i, output in enumerate(outputs, 1):
-        output_id = output.get("id", "unknown")
-        output_type = output.get("type", "unknown")
-        description = output.get("description", "")
-        if description:
-            print(f"  {i}. {output_id} ({output_type}) - {description}")
-        else:
-            print(f"  {i}. {output_id} ({output_type})")
-
-    print(f"\n  a. Select all destinations")
-    print(f"  n. Select none (skip destinations)")
-
-    while True:
-        choice = input("\nSelect destination(s) to copy (comma-separated numbers, 'a' for all, 'n' for none): ").strip().lower()
-
-        if choice == 'a':
-            return outputs
-        if choice == 'n':
-            return []
-
-        try:
-            indices = [int(x.strip()) - 1 for x in choice.split(',')]
-            selected = []
-            valid = True
-            for index in indices:
-                if 0 <= index < len(outputs):
-                    selected.append(outputs[index])
-                else:
-                    print(f"Invalid selection: {index + 1}")
-                    valid = False
-                    break
-            if valid:
-                return selected
-        except ValueError:
-            print("Please enter valid numbers separated by commas, 'a' for all, or 'n' for none")
+    return select_items(outputs, "destinations", format_output_item)
 
 
-def create_output(base_url, token, output_config):
+def create_output(base_url: str, token: str, output_config: Resource) -> requests.Response:
     """Create an output/destination in the target worker group."""
-    url = f"{base_url}/system/outputs"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-
-    response = requests.post(url, json=output_config, headers=headers)
-    return response
+    return create_resource(base_url, token, "system/outputs", output_config)
 
 
-def update_output(base_url, token, output_id, output_config):
+def update_output(base_url: str, token: str, output_id: str, output_config: Resource) -> requests.Response:
     """Update an existing output/destination in the target worker group."""
-    url = f"{base_url}/system/outputs/{output_id}"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-
-    response = requests.patch(url, json=output_config, headers=headers)
-    return response
+    return update_resource(base_url, token, "system/outputs", output_id, output_config)
 
 
-def copy_outputs(base_url, token, outputs, existing_ids):
+def copy_outputs(base_url: str, token: str, outputs: ResourceList, existing_ids: set[str]) -> CopyResults:
     """Copy outputs/destinations to the target worker group."""
-    results = {"created": [], "updated": [], "failed": []}
-
-    for output in outputs:
-        output_id = output.get("id")
-
-        if output_id in existing_ids:
-            choice = input(f"  Destination '{output_id}' already exists. Overwrite? (y/n): ").strip().lower()
-            if choice == 'y':
-                response = update_output(base_url, token, output_id, output)
-                if response.status_code == 200:
-                    print(f"    Updated: {output_id}")
-                    results["updated"].append(output_id)
-                else:
-                    print(f"    Failed to update: {output_id} ({response.status_code})")
-                    results["failed"].append(output_id)
-            else:
-                print(f"    Skipped: {output_id}")
-        else:
-            response = create_output(base_url, token, output)
-            if response.status_code == 200:
-                print(f"    Created: {output_id}")
-                results["created"].append(output_id)
-            else:
-                print(f"    Failed to create: {output_id} ({response.status_code})")
-                print(f"    Response: {response.text}")
-                results["failed"].append(output_id)
-
-    return results
+    return copy_resources(base_url, token, outputs, existing_ids, "system/outputs", "destination")
 
 
 # --- Routes ---
 
-def get_routes(base_url, token):
+def get_routes(base_url: str, token: str) -> ResourceList:
     """Fetch all routes from Cribl Cloud API."""
     url = f"{base_url}/routes"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, headers=make_auth_headers(token))
 
     if response.status_code != 200:
         print(f"Error: Failed to fetch routes ({response.status_code})")
         print(f"Response: {response.text}")
         return []
 
-    data = response.json()
     # Routes API returns items which contains a 'routes' array
-    items = data.get("items", [])
+    items = response.json().get("items", [])
     if items and isinstance(items, list):
         # Get the routes from the first item (usually the 'default' route set)
         for item in items:
@@ -534,29 +419,34 @@ def get_routes(base_url, token):
     return []
 
 
-def get_routes_config(base_url, token):
+def get_routes_config(base_url: str, token: str) -> Resource | None:
     """Fetch full routes configuration from Cribl Cloud API."""
     url = f"{base_url}/routes"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, headers=make_auth_headers(token))
 
     if response.status_code != 200:
         print(f"Error: Failed to fetch routes ({response.status_code})")
         print(f"Response: {response.text}")
         return None
 
-    data = response.json()
-    items = data.get("items", [])
-    if items:
-        return items[0]  # Return the full config object
-    return None
+    items = response.json().get("items", [])
+    return items[0] if items else None
 
 
-def select_routes(routes):
+def format_route_item(route: Resource) -> str:
+    """Format a route item for display."""
+    route_name = route.get("name", route.get("id", "unknown"))
+    pipeline = route.get("pipeline", "none")
+    output = route.get("output", "default")
+    filter_expr = route.get("filter", "true")
+
+    if len(filter_expr) > 40:
+        filter_expr = filter_expr[:37] + "..."
+
+    return f"{route_name} -> pipeline:{pipeline} -> output:{output}\n      filter: {filter_expr}"
+
+
+def select_routes(routes: ResourceList) -> ResourceList:
     """Prompt user to select routes to copy."""
     if not routes:
         print("No routes found.")
@@ -564,22 +454,10 @@ def select_routes(routes):
 
     print("\nAvailable Routes:")
     for i, route in enumerate(routes, 1):
-        route_id = route.get("id", "unknown")
-        route_name = route.get("name", route_id)
-        pipeline = route.get("pipeline", "none")
-        output = route.get("output", "default")
-        filter_expr = route.get("filter", "true")
-        enabled = "enabled" if route.get("final", False) is False else "final"
+        print(f"  {i}. {format_route_item(route)}")
 
-        # Truncate filter if too long
-        if len(filter_expr) > 40:
-            filter_expr = filter_expr[:37] + "..."
-
-        print(f"  {i}. {route_name} -> pipeline:{pipeline} -> output:{output}")
-        print(f"      filter: {filter_expr}")
-
-    print(f"\n  a. Select all routes")
-    print(f"  n. Select none (skip routes)")
+    print("\n  a. Select all routes")
+    print("  n. Select none (skip routes)")
 
     while True:
         choice = input("\nSelect route(s) to copy (comma-separated numbers, 'a' for all, 'n' for none): ").strip().lower()
@@ -593,6 +471,7 @@ def select_routes(routes):
             indices = [int(x.strip()) - 1 for x in choice.split(',')]
             selected = []
             valid = True
+
             for index in indices:
                 if 0 <= index < len(routes):
                     selected.append(routes[index])
@@ -600,30 +479,27 @@ def select_routes(routes):
                     print(f"Invalid selection: {index + 1}")
                     valid = False
                     break
+
             if valid:
                 return selected
         except ValueError:
             print("Please enter valid numbers separated by commas, 'a' for all, or 'n' for none")
 
 
-def update_routes(base_url, token, routes_config):
+def update_routes(base_url: str, token: str, routes_config: Resource) -> requests.Response:
     """Update routes configuration in the target worker group."""
     url = f"{base_url}/routes/default"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-
-    response = requests.patch(url, json=routes_config, headers=headers)
-    return response
+    return requests.patch(url, json=routes_config, headers=make_auth_headers(token))
 
 
-def validate_route_dependencies(routes, target_pipeline_ids, target_output_ids):
+def validate_route_dependencies(
+    routes: ResourceList,
+    target_pipeline_ids: set[str],
+    target_output_ids: set[str]
+) -> tuple[ResourceList, list[dict[str, Any]]]:
     """Check if routes have dependencies that exist in target worker group."""
     valid_routes = []
     invalid_routes = []
-
-    # Add special outputs that are always valid
     valid_outputs = target_output_ids | {"default", "devnull", ""}
 
     for route in routes:
@@ -633,11 +509,9 @@ def validate_route_dependencies(routes, target_pipeline_ids, target_output_ids):
         missing_pipelines = []
         missing_outputs = []
 
-        # Check pipeline (empty string or passthru are always valid)
         if pipeline and pipeline != "passthru" and pipeline not in target_pipeline_ids:
             missing_pipelines.append(pipeline)
 
-        # Check output
         if output and output not in valid_outputs:
             missing_outputs.append(output)
 
@@ -654,10 +528,20 @@ def validate_route_dependencies(routes, target_pipeline_ids, target_output_ids):
     return valid_routes, invalid_routes
 
 
-def copy_routes(base_url, token, selected_routes, existing_routes, target_pipeline_ids, target_output_ids,
-                source_pipelines=None, source_outputs=None, existing_target_pipeline_ids=None, existing_target_output_ids=None):
+def copy_routes(
+    base_url: str,
+    token: str,
+    selected_routes: ResourceList,
+    existing_routes: ResourceList,
+    target_pipeline_ids: set[str],
+    target_output_ids: set[str],
+    source_pipelines: ResourceList | None = None,
+    source_outputs: ResourceList | None = None,
+    existing_target_pipeline_ids: set[str] | None = None,
+    existing_target_output_ids: set[str] | None = None
+) -> dict[str, Any]:
     """Copy routes to the target worker group."""
-    results = {"created": [], "updated": [], "failed": [], "skipped": []}
+    results: dict[str, Any] = {"created": [], "updated": [], "failed": [], "skipped": []}
     dep_results = {"pipelines_created": [], "outputs_created": [], "pipelines_failed": [], "outputs_failed": []}
 
     # Validate route dependencies first
@@ -837,54 +721,49 @@ def copy_routes(base_url, token, selected_routes, existing_routes, target_pipeli
 
 # --- Commit and Deploy ---
 
-def commit_changes(workspace, org_id, token, group, message="Cribl Export Tool: Configuration update"):
+DEFAULT_COMMIT_MESSAGE = "Cribl Export Tool: Configuration update"
+
+
+def commit_changes(
+    workspace: str,
+    org_id: str,
+    token: str,
+    group: str,
+    message: str = DEFAULT_COMMIT_MESSAGE
+) -> requests.Response:
     """Commit pending configuration changes for a worker group."""
     base_url = f"https://{workspace}-{org_id}.cribl.cloud/api/v1"
     url = f"{base_url}/version/commit"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "message": message,
-        "group": group
-    }
-
-    response = requests.post(url, json=payload, headers=headers)
-    return response
+    payload = {"message": message, "group": group}
+    return requests.post(url, json=payload, headers=make_auth_headers(token))
 
 
-def deploy_changes(workspace, org_id, token, group, version):
+def deploy_changes(
+    workspace: str,
+    org_id: str,
+    token: str,
+    group: str,
+    version: str
+) -> requests.Response:
     """Deploy committed changes to a worker group."""
     base_url = f"https://{workspace}-{org_id}.cribl.cloud/api/v1"
     url = f"{base_url}/master/groups/{group}/deploy"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "version": version
-    }
-
-    response = requests.patch(url, json=payload, headers=headers)
-    return response
+    return requests.patch(url, json={"version": version}, headers=make_auth_headers(token))
 
 
-def commit_and_deploy(workspace, org_id, token, group, message=None):
+def commit_and_deploy(
+    workspace: str,
+    org_id: str,
+    token: str,
+    group: str,
+    message: str | None = None
+) -> bool:
     """Commit and deploy changes to a worker group."""
-    default_suffix = "Cribl Export Tool: Configuration update"
-
-    if message:
-        commit_message = f"{message} | {default_suffix}"
-    else:
-        commit_message = default_suffix
+    commit_message = f"{message} | {DEFAULT_COMMIT_MESSAGE}" if message else DEFAULT_COMMIT_MESSAGE
 
     print(f"\nCommitting changes to '{group}'...")
     print(f"  Message: {commit_message}")
 
-    # Commit
     commit_response = commit_changes(workspace, org_id, token, group, commit_message)
 
     if commit_response.status_code != 200:
@@ -892,8 +771,7 @@ def commit_and_deploy(workspace, org_id, token, group, message=None):
         print(f"  Response: {commit_response.text}")
         return False
 
-    commit_data = commit_response.json()
-    items = commit_data.get("items", [])
+    items = commit_response.json().get("items", [])
 
     if not items:
         print("  No changes to commit.")
@@ -905,20 +783,43 @@ def commit_and_deploy(workspace, org_id, token, group, message=None):
     print(f"  Commit successful: {commit_hash[:12]}...")
     print(f"  Changes: {summary.get('changes', 0)}, Insertions: {summary.get('insertions', 0)}, Deletions: {summary.get('deletions', 0)}")
 
-    # Deploy
     print(f"\nDeploying to '{group}'...")
     deploy_response = deploy_changes(workspace, org_id, token, group, commit_hash)
 
     if deploy_response.status_code == 200:
         print("  Deploy successful!")
         return True
-    else:
-        print(f"  Failed to deploy ({deploy_response.status_code})")
-        print(f"  Response: {deploy_response.text}")
-        return False
+
+    print(f"  Failed to deploy ({deploy_response.status_code})")
+    print(f"  Response: {deploy_response.text}")
+    return False
 
 
-def main():
+def validate_config(config: Config) -> None:
+    """Validate that required config fields are present."""
+    required_fields = ["client_id", "client_secret", "workspace", "org_id"]
+    for field in required_fields:
+        if not config.get(field):
+            print(f"Error: Missing required config field: {field}")
+            sys.exit(1)
+
+
+def print_results_summary(name: str, results: CopyResults, include_skipped: bool = False) -> None:
+    """Print a summary of copy results for a resource type."""
+    print(f"{name}:")
+    print(f"  Created: {len(results.get('created', []))}")
+    print(f"  Updated: {len(results.get('updated', []))}")
+    if include_skipped:
+        print(f"  Skipped: {len(results.get('skipped', []))}")
+    print(f"  Failed:  {len(results.get('failed', []))}")
+
+    if include_skipped and results.get('skipped'):
+        print(f"  Skipped items: {', '.join(results['skipped'])}")
+    if results.get('failed'):
+        print(f"  Failed items: {', '.join(results['failed'])}")
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Copy Cribl Cloud sources, pipelines, and routes between worker groups."
     )
@@ -930,12 +831,7 @@ def main():
     args = parser.parse_args()
 
     config = load_config(args.config)
-
-    required_fields = ["client_id", "client_secret", "workspace", "org_id"]
-    for field in required_fields:
-        if not config.get(field):
-            print(f"Error: Missing required config field: {field}")
-            sys.exit(1)
+    validate_config(config)
 
     print("Authenticating with Cribl Cloud...")
     token = get_auth_token(config["client_id"], config["client_secret"])
@@ -948,10 +844,8 @@ def main():
         print("No worker groups found. Exiting.")
         sys.exit(1)
 
-    # Select what to copy
     resource_types = select_resource_type()
 
-    # Select source worker group
     print("\n--- SOURCE WORKER GROUP ---")
     source_group = select_worker_group(groups, "Select SOURCE worker group (copy from)")
 
@@ -961,21 +855,15 @@ def main():
 
     print(f"\nSelected source group: {source_group}")
 
-    source_base_url = build_base_url(
-        config["workspace"],
-        config["org_id"],
-        source_group
-    )
+    source_base_url = build_base_url(config["workspace"], config["org_id"], source_group)
 
     # Fetch and select resources
-    selected_sources = []
-    selected_pipelines = []
-    selected_outputs = []
-    selected_routes = []
-
-    # Store all source data for dependency resolution
-    all_source_pipelines = []
-    all_source_outputs = []
+    selected_sources: ResourceList = []
+    selected_pipelines: ResourceList = []
+    selected_outputs: ResourceList = []
+    selected_routes: ResourceList = []
+    all_source_pipelines: ResourceList = []
+    all_source_outputs: ResourceList = []
 
     if 'sources' in resource_types:
         print(f"\nFetching sources from: {source_group}")
@@ -1009,11 +897,10 @@ def main():
             selected_routes = select_routes(routes)
             print(f"Selected {len(selected_routes)} route(s).")
 
-    if not selected_sources and not selected_pipelines and not selected_outputs and not selected_routes:
+    if not any([selected_sources, selected_pipelines, selected_outputs, selected_routes]):
         print("\nNo resources selected to copy. Exiting.")
         return
 
-    # Select target worker group
     print("\n--- TARGET WORKER GROUP ---")
     target_group = select_worker_group(groups, "Select TARGET worker group (copy to)")
 
@@ -1030,32 +917,25 @@ def main():
 
     print(f"\nSelected target group: {target_group}")
 
-    target_base_url = build_base_url(
-        config["workspace"],
-        config["org_id"],
-        target_group
-    )
+    target_base_url = build_base_url(config["workspace"], config["org_id"], target_group)
 
     # Get existing resources in target
-    existing_source_ids = set()
-    existing_pipeline_ids = set()
-    existing_output_ids = set()
-    existing_routes = []
+    existing_source_ids: set[str] = set()
+    existing_pipeline_ids: set[str] = set()
+    existing_output_ids: set[str] = set()
+    existing_routes: ResourceList = []
 
     if selected_sources:
         print(f"Checking existing sources in: {target_group}")
-        existing_sources = get_sources(target_base_url, token)
-        existing_source_ids = {s.get("id") for s in existing_sources}
+        existing_source_ids = {s.get("id") for s in get_sources(target_base_url, token)}
 
     if selected_pipelines or selected_routes:
         print(f"Checking existing pipelines in: {target_group}")
-        existing_pipelines = get_pipelines(target_base_url, token)
-        existing_pipeline_ids = {p.get("id") for p in existing_pipelines}
+        existing_pipeline_ids = {p.get("id") for p in get_pipelines(target_base_url, token)}
 
     if selected_outputs or selected_routes:
         print(f"Checking existing destinations in: {target_group}")
-        existing_outputs = get_outputs(target_base_url, token)
-        existing_output_ids = {o.get("id") for o in existing_outputs}
+        existing_output_ids = {o.get("id") for o in get_outputs(target_base_url, token)}
 
     if selected_routes:
         print(f"Checking existing routes in: {target_group}")
@@ -1116,39 +996,13 @@ def main():
     # Summary
     print("\n--- SUMMARY ---")
     if selected_sources:
-        print("Sources:")
-        print(f"  Created: {len(source_results['created'])}")
-        print(f"  Updated: {len(source_results['updated'])}")
-        print(f"  Failed:  {len(source_results['failed'])}")
-        if source_results['failed']:
-            print(f"  Failed items: {', '.join(source_results['failed'])}")
-
+        print_results_summary("Sources", source_results)
     if selected_pipelines:
-        print("Pipelines:")
-        print(f"  Created: {len(pipeline_results['created'])}")
-        print(f"  Updated: {len(pipeline_results['updated'])}")
-        print(f"  Failed:  {len(pipeline_results['failed'])}")
-        if pipeline_results['failed']:
-            print(f"  Failed items: {', '.join(pipeline_results['failed'])}")
-
+        print_results_summary("Pipelines", pipeline_results)
     if selected_outputs:
-        print("Destinations:")
-        print(f"  Created: {len(output_results['created'])}")
-        print(f"  Updated: {len(output_results['updated'])}")
-        print(f"  Failed:  {len(output_results['failed'])}")
-        if output_results['failed']:
-            print(f"  Failed items: {', '.join(output_results['failed'])}")
-
+        print_results_summary("Destinations", output_results)
     if selected_routes:
-        print("Routes:")
-        print(f"  Created: {len(route_results['created'])}")
-        print(f"  Updated: {len(route_results['updated'])}")
-        print(f"  Skipped: {len(route_results['skipped'])}")
-        print(f"  Failed:  {len(route_results['failed'])}")
-        if route_results['skipped']:
-            print(f"  Skipped items: {', '.join(route_results['skipped'])}")
-        if route_results['failed']:
-            print(f"  Failed items: {', '.join(route_results['failed'])}")
+        print_results_summary("Routes", route_results, include_skipped=True)
 
         # Show dependencies that were auto-copied
         dep_results = route_results.get('dep_results', {})
