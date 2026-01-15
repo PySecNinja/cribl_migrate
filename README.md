@@ -2,6 +2,17 @@
 
 Copy sources, pipelines, routes, and destinations between worker groups with a Cribl Cloud leader.
 
+For Packs we have this nice option in the GUI to "Copy Selectected Packs to Another Worker Group"
+
+<img width="722" height="119" alt="Screenshot 2026-01-15 at 01 35 54" src="https://github.com/user-attachments/assets/9ed34063-db6b-43ab-a46d-72ad805c7b62" />
+
+Wouldn't it be great if we could do the same for Global Sources, Pipelines, Routes, Destinations. Some sources like exec and the script collector cannot be bundled in a pack as of this writing. 
+
+Current State:
+<img width="495" height="114" alt="Screenshot 2026-01-15 at 01 37 19" src="https://github.com/user-attachments/assets/3e2b0e64-7314-47ac-b4f7-fcbcd92b0575" />
+
+With cribl_migrate.py you now have an interactive terminal to copy these config's easily to other Worker Groups Hybrid or Cribl Managed all done via API. 
+
 ## Features
 
 - Copy **Sources** between worker groups
