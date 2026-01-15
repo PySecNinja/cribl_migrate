@@ -1,17 +1,29 @@
 # Cribl Cloud Configuration Copy Tool
 
-Copy sources, pipelines, routes, and destinations between worker groups with a Cribl Cloud leader.
+## Overview
 
-For Packs we have this nice option in the GUI to "Copy Selectected Packs to Another Worker Group"
+This tool facilitates the copying of configurations between worker groups on a Cribl Cloud leader. While Cribl's GUI handles Packs efficiently, moving individual global configurations often requires manual intervention. This utility handles that process via the API.
+
+## The Challenge
+
+Currently, the Cribl GUI provides a convenient native option to **"Copy Selected Packs to Another Worker Group"**:
 
 <img width="722" height="119" alt="Screenshot 2026-01-15 at 01 35 54" src="https://github.com/user-attachments/assets/9ed34063-db6b-43ab-a46d-72ad805c7b62" />
 
-Wouldn't it be great if we could do the same for Global Sources, Pipelines, Routes, Destinations. Some sources like exec and the script collector cannot be bundled in a pack as of this writing. 
 
-Current State:
-<img width="495" height="114" alt="Screenshot 2026-01-15 at 01 37 19" src="https://github.com/user-attachments/assets/3e2b0e64-7314-47ac-b4f7-fcbcd92b0575" />
+However, this functionality does not extend to **Global Sources, Pipelines, Routes, or Destinations**. 
 
-With cribl_migrate.py you now have an interactive terminal to copy these config's easily to other Worker Groups Hybrid or Cribl Managed all done via API. 
+This limitation becomes a significant bottleneck when:
+* **Migrating Large Configs:** Moving 30+ sources manually is tedious and error-prone.
+* **Handling Non-Packable Items:** Certain sources—such as `exec` and the Script Collector—cannot be bundled in a Pack (as of this writing), forcing administrators to manually recreate them in target groups.
+
+**Sources Example - Missing Button:**
+
+<img width="591" height="117" alt="Screenshot 2026-01-15 at 01 47 05" src="https://github.com/user-attachments/assets/12400b18-4e5c-4c5c-9b7e-207415ec558d" />
+
+## The Solution: `cribl_migrate.py`
+
+`cribl_migrate.py` bridges this gap by providing an interactive terminal interface to copy these configurations easily to other Worker Groups.
 
 ## Features
 
@@ -19,7 +31,7 @@ With cribl_migrate.py you now have an interactive terminal to copy these config'
 - Copy **Pipelines** between worker groups
 - Copy **Routes** between worker groups (with automatic dependency resolution)
 - Copy **Destinations** between worker groups
-- Interactive selection of resources to copy
+- Interactive CLI: Simple prompts guide the migration process.
 - Automatic conflict detection with overwrite prompts
 - Commit and deploy changes directly from the tool
 
@@ -51,9 +63,11 @@ You can obtain API credentials from the Cribl Cloud UI under **Settings > API Cr
 
 ```bash
 python cribl_migrate.py
+```
 
 OR
 
+```bash
 python cribl_migrate.py --config config.json
 ```
 
