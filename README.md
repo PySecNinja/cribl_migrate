@@ -2,7 +2,7 @@
 
 ## Overview
 
-This tool facilitates the copying of configurations between worker groups on a Cribl Cloud leader. While Cribl's GUI handles Packs efficiently, moving individual global configurations often requires manual intervention. This utility handles that process via the API.
+This tool facilitates the copying of configurations between worker groups and edge fleets on a Cribl Cloud leader. While Cribl's GUI handles Packs efficiently, moving individual global configurations often requires manual intervention. This utility handles that process via the API.
 
 ## The Challenge
 
