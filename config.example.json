@@ -1,0 +1,7 @@
+{
+  "client_id": "your-client-id",
+  "client_secret": "your-client-secret",
+  "workspace": "your-workspace",
+  "org_id": "your-org-id",
+  "output_dir": "./sources"
+}
